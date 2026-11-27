@@ -18,7 +18,7 @@ This branch is an **incomplete hardening experiment**, not a certified malware-f
 2. **Executable injection:** The launcher deliberately injects a DLL into the Discord Phoenix process. This is a sensitive technique and some endpoint products may detect it.
 3. **JS/plugin runtime:** The minimal Windows launcher forces gate-only mode, so the full plugin runtime is not initialized on this launch path. However, code implementing it is still in the repository; standalone or upstream artifacts may still enable it.
 4. **Supply chain:** Cargo.lock pins package versions, but dependencies and build steps still require independent audit.
-5. **No verified binary:** This branch has not been compiled or exercised on Windows in this review. A GitHub Actions attempt failed before any runner was assigned (no steps executed), so no Windows build results exist.
+5. **No verified binary:** This branch has not been compiled or exercised on Windows in this review. A GitHub Actions attempt and retry failed before any runner was assigned (no steps executed), so no Windows build results exist.
 
 ## Review/build checklist
 
@@ -36,7 +36,7 @@ Do not download DLLs from unknown mirrors, disable Microsoft Defender, or enter 
 
 ## Check results
 
-- **15/15 independent source-level invariants passed** in repository-content checks on the security branch (DLL download disabled, hash check present, minimal mode forced, lockfile pinned, restricted CI).
+- **18/18 independent source-level invariants passed** in repository-content checks on the security branch (DLL download disabled, hash check present, minimal mode forced, lockfile pinned, 135 registry package checksums and 1 Git commit pin checked, restricted CI).
 - **Windows compile: NOT VERIFIED.** The [GitHub Actions run](https://github.com/uncle43yt/sunjbird/actions/runs/45973881644) and retry concluded as failures with no allocated runner and no executed steps. This is not evidence that compilation failed. Check the repository's Actions settings/billing/runner availability in GitHub, or use a disposable Windows VM.
 - **Windows Defender and dynamic execution: NOT PERFORMED.**
 - **Phoenix functionality: NOT TESTED.** Original access-gate logic is unchanged, but its actual behavior has not been established.
