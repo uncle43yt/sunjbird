@@ -15,7 +15,6 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-#[cfg(windows)] mod http;
 #[cfg(windows)] mod shortcuts;
 
 #[cfg(windows)]
@@ -53,8 +52,6 @@ mod windows {
       },
       process::Command,
       ptr,
-      thread,
-      time::Duration,
    };
 
    use misstep::{
@@ -128,29 +125,6 @@ mod windows {
    #[link(name = "user32")]
    unsafe extern "system" {
       fn MessageBoxW(window: Handle, text: *const u16, caption: *const u16, kind: u32) -> i32;
-   }
-
-   /// Where the site serves `version.json` and the loaders. `SUNBIRD_SITE`
-   /// points it at a local server for testing; anything else must be https,
-   /// since what it serves is loaded into Discord.
-   fn site() -> misstep::Result<String> {
-      let site =
-         env::var("SUNBIRD_SITE").unwrap_or_else(|_| "https://assets.sunbird.tools".to_owned());
-      if !site_allowed(&site) {
-         misstep::bail!("SUNBIRD_SITE must be https:// or a localhost server, not {site}");
-      }
-      Ok(site)
-   }
-
-   fn site_allowed(site: &str) -> bool {
-      site.starts_with("https://")
-         || ["http://127.0.0.1", "http://localhost"]
-            .iter()
-            .any(|local| {
-               site
-                  .strip_prefix(local)
-                  .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
-            })
    }
 
    /// Shows `text` in a message box, since the launcher has no console.
@@ -554,81 +528,6 @@ mod windows {
          .is_some_and(|(a, b)| a == b)
    }
 
-   /// Downloads `phoenix.dll` when the site's loader version differs from the
-   /// one recorded beside it. A running Discord keeps the old DLL mapped,
-   /// which Windows lets us rename but not overwrite.
-   fn update(home: &Path, dll: &Path) -> misstep::Result<()> {
-      let site = site()?;
-      let manifest = crate::http::text(&format!("{site}/version.json"), Duration::from_secs(10))?;
-      let version = loader_version(&manifest).context("version.json has no loader")?;
-      let stamp = home.join("version.txt");
-      if dll.is_file() && fs::read_to_string(&stamp).is_ok_and(|have| have.trim() == version) {
-         return Ok(());
-      }
-      // Per process, so a second launch mid-download writes its own file.
-      let fresh = home.join(format!("phoenix.dll.{}.new", std::process::id()));
-      // Discord waits on this download. With a DLL to fall back on, a slow one
-      // gives up sooner; a first install has nothing else, so it keeps trying.
-      let attempts = if dll.is_file() { 1 } else { 3 };
-      let url = format!("{site}/plugins/phoenix-windows-x86_64.dll");
-      let mut downloaded = crate::http::download(&url, &fresh, Duration::from_secs(60));
-      for _ in 1..attempts {
-         if downloaded.is_ok() {
-            break;
-         }
-         thread::sleep(Duration::from_secs(2));
-         downloaded = crate::http::download(&url, &fresh, Duration::from_secs(60));
-      }
-      if let Err(err) = downloaded {
-         let _ = fs::remove_file(&fresh);
-         return Err(err);
-      }
-      // A captive portal or a wrong deploy still writes its body here;
-      // swapping that in would leave Discord without a working DLL.
-      if !is_loader(&fresh) {
-         let _ = fs::remove_file(&fresh);
-         misstep::bail!("the downloaded phoenix.dll is not a Windows loader");
-      }
-      let old = home.join("phoenix.dll.old");
-      let _ = fs::remove_file(&old);
-      let replaced = if dll.is_file() {
-         fs::rename(dll, &old)?;
-         true
-      } else {
-         false
-      };
-      if let Err(install) = fs::rename(&fresh, dll) {
-         // A failed swap must not leave Sunbird without a DLL: the one moved
-         // aside goes back into place, and this launch carries on with it.
-         let _ = fs::remove_file(&fresh);
-         if replaced && fs::rename(&old, dll).is_ok() {
-            return Ok(());
-         }
-         misstep::bail!("installing phoenix.dll failed: {install}");
-      }
-      let _ = fs::remove_file(&old);
-      fs::write(stamp, version)?;
-      Ok(())
-   }
-
-   /// Whether `path` is a Windows PE image carrying the version marker every
-   /// loader is built with (`crates/runtime/src/update.rs`).
-   fn is_loader(path: &Path) -> bool {
-      fs::read(path).is_ok_and(|bytes| {
-         bytes.starts_with(b"MZ")
-            && bytes
-               .windows(16)
-               .any(|window| window == b"phoenix-version:")
-      })
-   }
-
-   /// `"loader": "<version>"` from `version.json`.
-   fn loader_version(manifest: &str) -> Option<&str> {
-      let rest = &manifest[manifest.find("\"loader\"")? + 8..];
-      let rest = &rest[rest.find('"')? + 1..];
-      rest.get(..rest.find('"')?)
-   }
-
    /// Removes the shortcuts and `home`. Files a running Discord or launcher
    /// still holds stay until they exit, and the user is told so.
    fn uninstall(local: &Path, home: &Path) {
@@ -661,34 +560,5 @@ mod windows {
          }
       }
 
-      #[test]
-      fn reads_the_loader_version() {
-         let manifest = "{\n  \"loader\": \"2026.11.23.2353-b51d77c\",\n  \"plugins\": {}\n}";
-         assert_eq!(
-            super::loader_version(manifest),
-            Some("2026.11.23.2353-b51d77c")
-         );
-         assert_eq!(super::loader_version("{}"), None);
-      }
-
-      #[test]
-      fn allows_https_or_localhost_sites() {
-         for ok in [
-            "https://assets.sunbird.tools",
-            "http://127.0.0.1:8765",
-            "http://localhost",
-            "http://localhost/x",
-         ] {
-            assert!(super::site_allowed(ok), "{ok}");
-         }
-         for bad in [
-            "http://assets.sunbird.tools",
-            "http://localhost.evil.com",
-            "http://127.0.0.1.evil.com",
-            "ftp://x",
-         ] {
-            assert!(!super::site_allowed(bad), "{bad}");
-         }
-      }
    }
 }
