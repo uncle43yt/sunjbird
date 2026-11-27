@@ -628,6 +628,7 @@ name = "phoenix-inject"
 version = "0.1.0"
 dependencies = [
  "misstep",
+ "sha2",
 ]
 
 [[package]]
