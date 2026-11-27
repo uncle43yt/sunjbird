@@ -5,6 +5,7 @@ These checks do not prove malware absence and do not replace compiling or
 sandboxing the actual Windows binaries.
 """
 from pathlib import Path
+import re
 import sys
 
 root = Path(__file__).resolve().parents[1]
@@ -33,6 +34,35 @@ checks = [
      'name = "sha2"\nversion = "0.10.9"' in lock and
      'name = "phoenix-inject"\nversion = "0.1.0"\ndependencies = [\n "misstep",\n "sha2",\n]' in lock),
 ]
+
+# Validate locked registry checksums and immutable Git revisions without
+# downloading or executing any dependency.
+packages = lock.split("[[package]]")[1:]
+registry_entries = [p for p in packages if 'source = "registry+' in p]
+git_entries = [p for p in packages if 'source = "git+' in p]
+checks.extend([
+    ("All registry packages have a 64-digit checksum",
+     all(re.search(r'^checksum = "[0-9a-f]{64}"
+    print(f'{"PASS" if passed else "FAIL"}: {label}')
+    failed |= not passed
+print("Static check cannot certify malware-free or confirm Discord Phoenix access.")
+sys.exit(1 if failed else 0)
+, p, re.MULTILINE)
+         for p in registry_entries)),
+    ("All Git dependencies are pinned to 40-digit commit IDs",
+     all(re.search(r'^source = "git+[^"]+#[0-9a-f]{40}"
+    print(f'{"PASS" if passed else "FAIL"}: {label}')
+    failed |= not passed
+print("Static check cannot certify malware-free or confirm Discord Phoenix access.")
+sys.exit(1 if failed else 0)
+, p, re.MULTILINE)
+         for p in git_entries)),
+    ("Only the dedicated Windows security workflow remains",
+     sorted(x.name for x in (root / ".github/workflows").glob("*.yml")) ==
+     ["windows-minimal-security.yml"]),
+])
+print(f"Locked packages: {len(packages)} total; {len(registry_entries)} registry; "
+      f"{len(git_entries)} pinned Git entries.")
 
 failed = False
 for label, passed in checks:
