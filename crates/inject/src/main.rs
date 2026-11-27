@@ -531,10 +531,13 @@ mod windows {
          fs::copy(&me, &launcher).context("copying the launcher")?;
       }
       let dll = home.join("phoenix.dll");
-      if let Err(err) = update(home, &dll)
-         && !dll.is_file()
-      {
-         return Err(err.context("downloading phoenix.dll"));
+      // Security-first fork: never retrieve executable code automatically.
+      // Only a locally built, explicitly supplied DLL can be used.
+      if !dll.is_file() {
+         misstep::bail!(
+            "phoenix.dll is missing from {}. Supply a locally reviewed build; automatic DLL downloads are disabled.",
+            home.display()
+         );
       }
       // Missing shortcuts never stop Discord from starting, and a shortcut the
       // user deleted stays deleted until they run the installer again.
