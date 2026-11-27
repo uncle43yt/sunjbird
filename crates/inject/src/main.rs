@@ -493,9 +493,8 @@ mod windows {
       check(unsafe { QueueUserAPC(load, info.thread, remote as usize) } != 0)
    }
 
-   /// Copies this launcher into `home`, adds its shortcuts once, and brings
-   /// `phoenix.dll` up to the site's version. A failed update keeps the DLL
-   /// already there, so Sunbird still starts offline.
+   /// Copies this launcher into `home` and adds shortcuts once.
+   /// An existing, independently reviewed DLL is required; no downloads occur.
    fn install(local: &Path, home: &Path) -> misstep::Result<PathBuf> {
       fs::create_dir_all(home)?;
       let launcher = home.join("sunbird.exe");
@@ -559,6 +558,5 @@ mod windows {
             assert_eq!(String::from_utf16(&command).unwrap(), quoted);
          }
       }
-
    }
 }
