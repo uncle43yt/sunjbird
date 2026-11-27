@@ -11,7 +11,7 @@
 //! Without a DLL argument it installs itself to `%LOCALAPPDATA%\Sunbird` with
 //! Start Menu and Desktop shortcuts. It requires a locally supplied
 //! `phoenix.dll` and never downloads executable updates. The plugin
-//! runtime is disabled by default; `--with-runtime` explicitly enables it.
+//! runtime is disabled by default in this Windows launcher.
 //! Discord's own files stay untouched. `--uninstall` removes both.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -290,14 +290,12 @@ mod windows {
          uninstall(&local, &home);
          return Ok(());
       }
-      // Minimal security profile is the default. A user must explicitly
-      // opt into the higher-risk plugin runtime.
-      let mut no_runtime = true;
-      while let Some(arg) = args.next_if(|arg| {
-         arg == "--no-runtime" || arg == "--gate-only" || arg == "--with-runtime"
-      }) {
-         no_runtime = arg != "--with-runtime";
-      }
+      // This minimal Windows profile does not enable the plugin runtime.
+      let no_runtime = true;
+      while args
+         .next_if(|arg| arg == "--no-runtime" || arg == "--gate-only")
+         .is_some()
+      {}
       let app = local.join("DiscordPhoenix").join("app");
       let exe = app.join("Discord.exe");
       if !exe.is_file() {
@@ -311,11 +309,10 @@ mod windows {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("dll"))
       });
-      while let Some(arg) = args.next_if(|arg| {
-         arg == "--no-runtime" || arg == "--gate-only" || arg == "--with-runtime"
-      }) {
-         no_runtime = arg != "--with-runtime";
-      }
+      while args
+         .next_if(|arg| arg == "--no-runtime" || arg == "--gate-only")
+         .is_some()
+      {}
       let launcher = if explicit.is_some() {
          env::current_exe()?
       } else {
@@ -389,9 +386,9 @@ mod windows {
       unsafe {
          env::set_var("SUNBIRD_RESTART_EXE", launcher);
          env::set_var("SUNBIRD_RESTART_ARGS", OsString::from_wide(&restart_args));
-         if no_runtime {
-            env::set_var("SUNBIRD_GATE_ONLY", "1");
-         }
+         // Force minimal mode even when launched from an environment
+         // containing stale Sunbird settings.
+         env::set_var("SUNBIRD_GATE_ONLY", "1");
       }
    }
 
