@@ -323,6 +323,7 @@ mod windows {
          None => install(&local, &home)?,
       };
       let dll = dll.canonicalize()?;
+      verify_dll_sha256(&dll)?;
       args.next_if(|arg| arg == "--");
       let args: Vec<OsString> = args.collect();
 
@@ -491,6 +492,38 @@ mod windows {
       check(unsafe { QueueUserAPC(load, info.thread, remote as usize) } != 0)
    }
 
+   /// Require an explicit SHA-256 digest beside the local DLL before injecting.
+   /// This detects changed files, but the checksum must come from an independently
+   /// trusted build. A sidecar alone is not a signed authenticity guarantee.
+   fn verify_dll_sha256(dll: &Path) -> misstep::Result<()> {
+      use sha2::{Digest as _, Sha256};
+      let manifest = dll.with_extension("dll.sha256");
+      let expected_text = fs::read_to_string(&manifest).context(format!(
+         "missing SHA-256 sidecar {} (review and hash the DLL first)",
+         manifest.display()
+      ))?;
+      let expected = expected_hash(&expected_text).context(
+         "invalid SHA-256 sidecar: expected 64 hexadecimal characters",
+      )?;
+      let content = fs::read(dll).context("reading DLL to verify its SHA-256")?;
+      let actual = Sha256::digest(&content);
+      let actual_hex: String = actual.iter().map(|byte| format!("{byte:02x}")).collect();
+      if !actual_hex.eq_ignore_ascii_case(expected) {
+         misstep::bail!(
+            "DLL SHA-256 mismatch for {}: expected {}, got {}",
+            dll.display(),
+            expected,
+            actual_hex
+         );
+      }
+      Ok(())
+   }
+
+   fn expected_hash(text: &str) -> Option<&str> {
+      let token = text.split_whitespace().next()?;
+      (token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())).then_some(token)
+   }
+
    /// Copies this launcher into `home` and adds shortcuts once.
    /// An existing, independently reviewed DLL is required; no downloads occur.
    fn install(local: &Path, home: &Path) -> misstep::Result<PathBuf> {
@@ -543,6 +576,15 @@ mod windows {
 
    #[cfg(test)]
    mod tests {
+      #[test]
+      fn validates_sha256_sidecar_format() {
+         assert!(super::expected_hash(&"a".repeat(64)).is_some());
+         assert!(super::expected_hash(&("A".repeat(64) + "  phoenix.dll")).is_some());
+         assert!(super::expected_hash(&"g".repeat(64)).is_none());
+         assert!(super::expected_hash(&"0".repeat(63)).is_none());
+         assert!(super::expected_hash(" ").is_none());
+      }
+
       #[test]
       fn quotes_windows_arguments_for_restart() {
          for (arg, quoted) in [
