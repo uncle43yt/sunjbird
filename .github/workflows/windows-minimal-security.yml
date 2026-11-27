@@ -1,0 +1,49 @@
+name: Windows minimal security review
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-invariants:
+    name: Static security invariants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check minimal Windows profile
+        run: python3 scripts/check-windows-minimal.py
+
+  windows-compile:
+    name: Windows compile and unit tests (no injection)
+    needs: static-invariants
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal
+      - name: Compile Windows source
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo +stable-x86_64-pc-windows-msvc check --locked -p phoenix-loader -p phoenix-inject
+      - name: Run launcher unit tests
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo +stable-x86_64-pc-windows-msvc test --locked -p phoenix-inject
+      - name: Build Windows artifacts locally
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo +stable-x86_64-pc-windows-msvc build --locked --release -p phoenix-loader -p phoenix-inject
+      - name: Compute hashes without publishing binaries
+        shell: pwsh
+        run: |
+          Get-FileHash target/release/phoenix.dll -Algorithm SHA256
+          Get-FileHash target/release/phoenix-inject.exe -Algorithm SHA256

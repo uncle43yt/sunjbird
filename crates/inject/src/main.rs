@@ -9,13 +9,13 @@
 //! and exits.
 //!
 //! Without a DLL argument it installs itself to `%LOCALAPPDATA%\Sunbird` with
-//! Start Menu and Desktop shortcuts, and fetches the site's newest
-//! `phoenix.dll` there before each launch. Discord's own files stay untouched,
-//! so its updates never undo Sunbird. `--uninstall` removes both.
+//! Start Menu and Desktop shortcuts. It requires a locally supplied
+//! `phoenix.dll` and never downloads executable updates. The plugin
+//! runtime is disabled by default in this Windows launcher.
+//! Discord's own files stay untouched. `--uninstall` removes both.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-#[cfg(windows)] mod http;
 #[cfg(windows)] mod shortcuts;
 
 #[cfg(windows)]
@@ -53,8 +53,6 @@ mod windows {
       },
       process::Command,
       ptr,
-      thread,
-      time::Duration,
    };
 
    use misstep::{
@@ -128,29 +126,6 @@ mod windows {
    #[link(name = "user32")]
    unsafe extern "system" {
       fn MessageBoxW(window: Handle, text: *const u16, caption: *const u16, kind: u32) -> i32;
-   }
-
-   /// Where the site serves `version.json` and the loaders. `SUNBIRD_SITE`
-   /// points it at a local server for testing; anything else must be https,
-   /// since what it serves is loaded into Discord.
-   fn site() -> misstep::Result<String> {
-      let site =
-         env::var("SUNBIRD_SITE").unwrap_or_else(|_| "https://assets.sunbird.tools".to_owned());
-      if !site_allowed(&site) {
-         misstep::bail!("SUNBIRD_SITE must be https:// or a localhost server, not {site}");
-      }
-      Ok(site)
-   }
-
-   fn site_allowed(site: &str) -> bool {
-      site.starts_with("https://")
-         || ["http://127.0.0.1", "http://localhost"]
-            .iter()
-            .any(|local| {
-               site
-                  .strip_prefix(local)
-                  .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
-            })
    }
 
    /// Shows `text` in a message box, since the launcher has no console.
@@ -315,13 +290,12 @@ mod windows {
          uninstall(&local, &home);
          return Ok(());
       }
-      let mut no_runtime = false;
+      // This minimal Windows profile does not enable the plugin runtime.
+      let no_runtime = true;
       while args
          .next_if(|arg| arg == "--no-runtime" || arg == "--gate-only")
          .is_some()
-      {
-         no_runtime = true;
-      }
+      {}
       let app = local.join("DiscordPhoenix").join("app");
       let exe = app.join("Discord.exe");
       if !exe.is_file() {
@@ -338,9 +312,7 @@ mod windows {
       while args
          .next_if(|arg| arg == "--no-runtime" || arg == "--gate-only")
          .is_some()
-      {
-         no_runtime = true;
-      }
+      {}
       let launcher = if explicit.is_some() {
          env::current_exe()?
       } else {
@@ -351,6 +323,7 @@ mod windows {
          None => install(&local, &home)?,
       };
       let dll = dll.canonicalize()?;
+      verify_dll_sha256(&dll)?;
       args.next_if(|arg| arg == "--");
       let args: Vec<OsString> = args.collect();
 
@@ -414,9 +387,9 @@ mod windows {
       unsafe {
          env::set_var("SUNBIRD_RESTART_EXE", launcher);
          env::set_var("SUNBIRD_RESTART_ARGS", OsString::from_wide(&restart_args));
-         if no_runtime {
-            env::set_var("SUNBIRD_GATE_ONLY", "1");
-         }
+         // Force minimal mode even when launched from an environment
+         // containing stale Sunbird settings.
+         env::set_var("SUNBIRD_GATE_ONLY", "1");
       }
    }
 
@@ -519,9 +492,40 @@ mod windows {
       check(unsafe { QueueUserAPC(load, info.thread, remote as usize) } != 0)
    }
 
-   /// Copies this launcher into `home`, adds its shortcuts once, and brings
-   /// `phoenix.dll` up to the site's version. A failed update keeps the DLL
-   /// already there, so Sunbird still starts offline.
+   /// Require an explicit SHA-256 digest beside the local DLL before injecting.
+   /// This detects changed files, but the checksum must come from an independently
+   /// trusted build. A sidecar alone is not a signed authenticity guarantee.
+   fn verify_dll_sha256(dll: &Path) -> misstep::Result<()> {
+      use sha2::{Digest as _, Sha256};
+      let manifest = dll.with_extension("dll.sha256");
+      let expected_text = fs::read_to_string(&manifest).context(format!(
+         "missing SHA-256 sidecar {} (review and hash the DLL first)",
+         manifest.display()
+      ))?;
+      let expected = expected_hash(&expected_text).context(
+         "invalid SHA-256 sidecar: expected 64 hexadecimal characters",
+      )?;
+      let content = fs::read(dll).context("reading DLL to verify its SHA-256")?;
+      let actual = Sha256::digest(&content);
+      let actual_hex: String = actual.iter().map(|byte| format!("{byte:02x}")).collect();
+      if !actual_hex.eq_ignore_ascii_case(expected) {
+         misstep::bail!(
+            "DLL SHA-256 mismatch for {}: expected {}, got {}",
+            dll.display(),
+            expected,
+            actual_hex
+         );
+      }
+      Ok(())
+   }
+
+   fn expected_hash(text: &str) -> Option<&str> {
+      let token = text.split_whitespace().next()?;
+      (token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())).then_some(token)
+   }
+
+   /// Copies this launcher into `home` and adds shortcuts once.
+   /// An existing, independently reviewed DLL is required; no downloads occur.
    fn install(local: &Path, home: &Path) -> misstep::Result<PathBuf> {
       fs::create_dir_all(home)?;
       let launcher = home.join("sunbird.exe");
@@ -531,10 +535,13 @@ mod windows {
          fs::copy(&me, &launcher).context("copying the launcher")?;
       }
       let dll = home.join("phoenix.dll");
-      if let Err(err) = update(home, &dll)
-         && !dll.is_file()
-      {
-         return Err(err.context("downloading phoenix.dll"));
+      // Security-first fork: never retrieve executable code automatically.
+      // Only a locally built, explicitly supplied DLL can be used.
+      if !dll.is_file() {
+         misstep::bail!(
+            "phoenix.dll is missing from {}. Supply a locally reviewed build; automatic DLL downloads are disabled.",
+            home.display()
+         );
       }
       // Missing shortcuts never stop Discord from starting, and a shortcut the
       // user deleted stays deleted until they run the installer again.
@@ -549,81 +556,6 @@ mod windows {
          .ok()
          .zip(b.canonicalize().ok())
          .is_some_and(|(a, b)| a == b)
-   }
-
-   /// Downloads `phoenix.dll` when the site's loader version differs from the
-   /// one recorded beside it. A running Discord keeps the old DLL mapped,
-   /// which Windows lets us rename but not overwrite.
-   fn update(home: &Path, dll: &Path) -> misstep::Result<()> {
-      let site = site()?;
-      let manifest = crate::http::text(&format!("{site}/version.json"), Duration::from_secs(10))?;
-      let version = loader_version(&manifest).context("version.json has no loader")?;
-      let stamp = home.join("version.txt");
-      if dll.is_file() && fs::read_to_string(&stamp).is_ok_and(|have| have.trim() == version) {
-         return Ok(());
-      }
-      // Per process, so a second launch mid-download writes its own file.
-      let fresh = home.join(format!("phoenix.dll.{}.new", std::process::id()));
-      // Discord waits on this download. With a DLL to fall back on, a slow one
-      // gives up sooner; a first install has nothing else, so it keeps trying.
-      let attempts = if dll.is_file() { 1 } else { 3 };
-      let url = format!("{site}/plugins/phoenix-windows-x86_64.dll");
-      let mut downloaded = crate::http::download(&url, &fresh, Duration::from_secs(60));
-      for _ in 1..attempts {
-         if downloaded.is_ok() {
-            break;
-         }
-         thread::sleep(Duration::from_secs(2));
-         downloaded = crate::http::download(&url, &fresh, Duration::from_secs(60));
-      }
-      if let Err(err) = downloaded {
-         let _ = fs::remove_file(&fresh);
-         return Err(err);
-      }
-      // A captive portal or a wrong deploy still writes its body here;
-      // swapping that in would leave Discord without a working DLL.
-      if !is_loader(&fresh) {
-         let _ = fs::remove_file(&fresh);
-         misstep::bail!("the downloaded phoenix.dll is not a Windows loader");
-      }
-      let old = home.join("phoenix.dll.old");
-      let _ = fs::remove_file(&old);
-      let replaced = if dll.is_file() {
-         fs::rename(dll, &old)?;
-         true
-      } else {
-         false
-      };
-      if let Err(install) = fs::rename(&fresh, dll) {
-         // A failed swap must not leave Sunbird without a DLL: the one moved
-         // aside goes back into place, and this launch carries on with it.
-         let _ = fs::remove_file(&fresh);
-         if replaced && fs::rename(&old, dll).is_ok() {
-            return Ok(());
-         }
-         misstep::bail!("installing phoenix.dll failed: {install}");
-      }
-      let _ = fs::remove_file(&old);
-      fs::write(stamp, version)?;
-      Ok(())
-   }
-
-   /// Whether `path` is a Windows PE image carrying the version marker every
-   /// loader is built with (`crates/runtime/src/update.rs`).
-   fn is_loader(path: &Path) -> bool {
-      fs::read(path).is_ok_and(|bytes| {
-         bytes.starts_with(b"MZ")
-            && bytes
-               .windows(16)
-               .any(|window| window == b"phoenix-version:")
-      })
-   }
-
-   /// `"loader": "<version>"` from `version.json`.
-   fn loader_version(manifest: &str) -> Option<&str> {
-      let rest = &manifest[manifest.find("\"loader\"")? + 8..];
-      let rest = &rest[rest.find('"')? + 1..];
-      rest.get(..rest.find('"')?)
    }
 
    /// Removes the shortcuts and `home`. Files a running Discord or launcher
@@ -645,6 +577,15 @@ mod windows {
    #[cfg(test)]
    mod tests {
       #[test]
+      fn validates_sha256_sidecar_format() {
+         assert!(super::expected_hash(&"a".repeat(64)).is_some());
+         assert!(super::expected_hash(&("A".repeat(64) + "  phoenix.dll")).is_some());
+         assert!(super::expected_hash(&"g".repeat(64)).is_none());
+         assert!(super::expected_hash(&"0".repeat(63)).is_none());
+         assert!(super::expected_hash(" ").is_none());
+      }
+
+      #[test]
       fn quotes_windows_arguments_for_restart() {
          for (arg, quoted) in [
             ("", r#""""#),
@@ -655,36 +596,6 @@ mod windows {
             let mut command = Vec::new();
             super::append_quoted(&mut command, arg.as_ref());
             assert_eq!(String::from_utf16(&command).unwrap(), quoted);
-         }
-      }
-
-      #[test]
-      fn reads_the_loader_version() {
-         let manifest = "{\n  \"loader\": \"2026.11.23.2353-b51d77c\",\n  \"plugins\": {}\n}";
-         assert_eq!(
-            super::loader_version(manifest),
-            Some("2026.11.23.2353-b51d77c")
-         );
-         assert_eq!(super::loader_version("{}"), None);
-      }
-
-      #[test]
-      fn allows_https_or_localhost_sites() {
-         for ok in [
-            "https://assets.sunbird.tools",
-            "http://127.0.0.1:8765",
-            "http://localhost",
-            "http://localhost/x",
-         ] {
-            assert!(super::site_allowed(ok), "{ok}");
-         }
-         for bad in [
-            "http://assets.sunbird.tools",
-            "http://localhost.evil.com",
-            "http://127.0.0.1.evil.com",
-            "ftp://x",
-         ] {
-            assert!(!super::site_allowed(bad), "{bad}");
          }
       }
    }

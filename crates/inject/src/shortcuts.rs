@@ -205,18 +205,23 @@ pub fn sync(local: &Path, launcher: &Path, remove: bool) -> misstep::Result<()> 
    let programs = known_folder(&FOLDER_PROGRAMS)?;
    let desktop = known_folder(&FOLDER_DESKTOP)?;
    let links = [
-      (programs.join("Sunbird.lnk"), "", "Discord with Sunbird"),
-      (desktop.join("Sunbird.lnk"), "", "Discord with Sunbird"),
       (
-         programs.join("Sunbird (access gate only).lnk"),
+         programs.join("Sunbird.lnk"),
          "--no-runtime",
-         "Discord past the access gate, without plugins",
+         "Sunbird minimal mode (plugin runtime disabled)",
+      ),
+      (
+         desktop.join("Sunbird.lnk"),
+         "--no-runtime",
+         "Sunbird minimal mode (plugin runtime disabled)",
       ),
    ];
    if remove {
       for (lnk, ..) in &links {
          let _ = fs::remove_file(lnk);
       }
+      // Remove the legacy second shortcut created by the upstream installer.
+      let _ = fs::remove_file(programs.join("Sunbird (access gate only).lnk"));
       return Ok(());
    }
    // SAFETY: the launcher's only thread, which never initializes COM another
