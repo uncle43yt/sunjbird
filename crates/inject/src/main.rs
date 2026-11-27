@@ -9,9 +9,10 @@
 //! and exits.
 //!
 //! Without a DLL argument it installs itself to `%LOCALAPPDATA%\Sunbird` with
-//! Start Menu and Desktop shortcuts, and fetches the site's newest
-//! `phoenix.dll` there before each launch. Discord's own files stay untouched,
-//! so its updates never undo Sunbird. `--uninstall` removes both.
+//! Start Menu and Desktop shortcuts. It requires a locally supplied
+//! `phoenix.dll` and never downloads executable updates. The plugin
+//! runtime is disabled by default; `--with-runtime` explicitly enables it.
+//! Discord's own files stay untouched. `--uninstall` removes both.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -289,12 +290,13 @@ mod windows {
          uninstall(&local, &home);
          return Ok(());
       }
-      let mut no_runtime = false;
-      while args
-         .next_if(|arg| arg == "--no-runtime" || arg == "--gate-only")
-         .is_some()
-      {
-         no_runtime = true;
+      // Minimal security profile is the default. A user must explicitly
+      // opt into the higher-risk plugin runtime.
+      let mut no_runtime = true;
+      while let Some(arg) = args.next_if(|arg| {
+         arg == "--no-runtime" || arg == "--gate-only" || arg == "--with-runtime"
+      }) {
+         no_runtime = arg != "--with-runtime";
       }
       let app = local.join("DiscordPhoenix").join("app");
       let exe = app.join("Discord.exe");
@@ -309,11 +311,10 @@ mod windows {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("dll"))
       });
-      while args
-         .next_if(|arg| arg == "--no-runtime" || arg == "--gate-only")
-         .is_some()
-      {
-         no_runtime = true;
+      while let Some(arg) = args.next_if(|arg| {
+         arg == "--no-runtime" || arg == "--gate-only" || arg == "--with-runtime"
+      }) {
+         no_runtime = arg != "--with-runtime";
       }
       let launcher = if explicit.is_some() {
          env::current_exe()?
