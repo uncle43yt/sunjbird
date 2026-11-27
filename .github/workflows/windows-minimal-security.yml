@@ -1,9 +1,6 @@
 name: Windows minimal security review
 
 on:
-  push:
-    branches:
-      - security/windows-offline-review
   pull_request:
   workflow_dispatch:
 
